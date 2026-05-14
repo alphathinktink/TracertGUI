@@ -3,7 +3,7 @@
     <LinkMUnicode>1</LinkMUnicode>
     <AppType>GUI</AppType>
     <Target>TracertGUI</Target>
-    <LinkLibraries>stdc++;shell32;uuid;comdlg32;comctl32;version;shlwapi</LinkLibraries>
+    <LinkLibraries>stdc++;ws2_32;iphlpapi;shell32;uuid;comdlg32;comctl32;version;shlwapi</LinkLibraries>
     <Warnings>unused-variable=0;unused-parameter=0;sign-compare=0;deprecated-declarations=0;attributes=1;unknown-pragmas=0;missing-field-initializers=0</Warnings>
     <VerboseBuild>0</VerboseBuild>
     <BuildArch>x64</BuildArch>
@@ -105,10 +105,10 @@
     <ConfigStampUtcCompile>134232515439485089</ConfigStampUtcCompile>
     <LinkStampUtcCompile>134232515747637208</LinkStampUtcCompile>
     <VersionStampUtcCompile>134232515439485089</VersionStampUtcCompile>
-    <Conditionals>_UNICODE;UNICODE;NOVTABLE=;_WIN32_WINNT=0x0501</Conditionals>
+    <Conditionals>_UNICODE;UNICODE;NOVTABLE=;_WIN32_WINNT=0x0600</Conditionals>
     <IncludesPaths></IncludesPaths>
     <LibrariesPaths></LibrariesPaths>
     <Files>
-        <File Dir="" Base="WinMainUnit" Kind="CPP" SrcExt=".cpp" SrcSize="420" SrcMTime="2026-05-14T16:59:34Z" HasHeader="0"/>
+        <File Dir="" Base="WinMainUnit" Kind="CPP" SrcExt=".cpp" SrcSize="27458" SrcMTime="2026-05-14T18:00:00Z" HasHeader="0"/>
     </Files>
 </Project>
