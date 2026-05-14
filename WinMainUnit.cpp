@@ -33,16 +33,17 @@
 #define IDC_START       1003
 #define IDC_AUTO        1004
 #define IDC_INTERVAL    1005
-#define IDC_STATUS      1006
-#define IDC_RESULTS     1007
+#define IDC_TIMEOUT     1006
+#define IDC_STATUS      1007
+#define IDC_RESULTS     1008
 
 #define WM_APP_TRACE_UPDATE     (WM_APP + 1)
 #define WM_APP_TRACE_DONE       (WM_APP + 2)
 #define WM_APP_NAME_UPDATE      (WM_APP + 3)
 
 #define TRACE_MAX_HOPS          30
-#define TRACE_PROBES            3
-#define TRACE_TIMEOUT_MS        1500
+#define TRACE_PROBES            1
+#define TRACE_TIMEOUT_MS        100
 #define TRACE_REFRESH_TIMER     42
 #define TRACE_DEFAULT_REFRESH   60
 //------------------------------------------------------------------------------------------
@@ -71,6 +72,7 @@ struct TraceConfig
     int family = AF_INET;
     bool autoRefresh = false;
     DWORD intervalSeconds = TRACE_DEFAULT_REFRESH;
+    DWORD timeoutMs = TRACE_TIMEOUT_MS;
 };
 
 struct AppState
@@ -82,6 +84,7 @@ struct AppState
     HWND startButton = NULL;
     HWND autoCheck = NULL;
     HWND intervalEdit = NULL;
+    HWND timeoutEdit = NULL;
     HWND statusText = NULL;
     HWND resultsView = NULL;
     HFONT uiFont = NULL;
@@ -104,6 +107,7 @@ struct NameLookupContext
     AppState* app = NULL;
     int hop = 0;
     int family = AF_UNSPEC;
+    DWORD timeoutMs = TRACE_TIMEOUT_MS;
     sockaddr_storage addr = {};
     int addrLen = 0;
 };
@@ -182,6 +186,18 @@ static int GetIntervalSeconds(HWND edit)
     return value;
 }
 
+static DWORD GetTimeoutMs(HWND edit)
+{
+    WCHAR text[32];
+    GetWindowTextW(edit, text, ARRAYSIZE(text));
+    int value = _wtoi(text);
+    if (value < 1)
+        value = 1;
+    if (value > 600000)
+        value = 600000;
+    return (DWORD)value;
+}
+
 static bool IsTerminalIcmpStatus(DWORD status)
 {
     return status == IP_SUCCESS || status == IP_DEST_HOST_UNREACHABLE || status == IP_DEST_NET_UNREACHABLE;
@@ -206,12 +222,103 @@ static void UpdateHop(AppState* app, const HopRow& row)
     PostMessageW(app->mainWnd, WM_APP_TRACE_UPDATE, 0, 0);
 }
 
-static void StartNameLookup(AppState* app, int hop, const sockaddr_storage& addr, int addrLen, int family)
+struct TimedNameInfoContext
+{
+    const sockaddr* addr = NULL;
+    int addrLen = 0;
+    WCHAR* host = NULL;
+    DWORD hostChars = 0;
+    DWORD flags = 0;
+    int result = EAI_FAIL;
+};
+
+struct TimedAddrInfoContext
+{
+    const WCHAR* host = NULL;
+    const ADDRINFOW* hints = NULL;
+    ADDRINFOW** result = NULL;
+    int rc = EAI_FAIL;
+};
+
+static DWORD WINAPI TimedGetNameInfoThread(LPVOID param)
+{
+    TimedNameInfoContext* ctx = (TimedNameInfoContext*)param;
+    ctx->result = GetNameInfoW(ctx->addr, ctx->addrLen, ctx->host, ctx->hostChars, NULL, 0, ctx->flags);
+    return 0;
+}
+
+static bool GetNameInfoWithTimeout(const sockaddr* addr, int addrLen, WCHAR* host, DWORD hostChars, DWORD flags, DWORD timeoutMs, int* rc)
+{
+    TimedNameInfoContext ctx = {};
+    ctx.addr = addr;
+    ctx.addrLen = addrLen;
+    ctx.host = host;
+    ctx.hostChars = hostChars;
+    ctx.flags = flags;
+
+    HANDLE thread = CreateThread(NULL, 0, TimedGetNameInfoThread, &ctx, 0, NULL);
+    if (!thread)
+    {
+        *rc = EAI_FAIL;
+        return true;
+    }
+
+    DWORD wait = WaitForSingleObject(thread, timeoutMs);
+    if (wait == WAIT_TIMEOUT)
+    {
+        TerminateThread(thread, 1);
+        CloseHandle(thread);
+        *rc = WSAETIMEDOUT;
+        return false;
+    }
+
+    CloseHandle(thread);
+    *rc = ctx.result;
+    return true;
+}
+
+static DWORD WINAPI TimedGetAddrInfoThread(LPVOID param)
+{
+    TimedAddrInfoContext* ctx = (TimedAddrInfoContext*)param;
+    ctx->rc = GetAddrInfoW(ctx->host, NULL, ctx->hints, ctx->result);
+    return 0;
+}
+
+static bool GetAddrInfoWithTimeout(const WCHAR* host, const ADDRINFOW* hints, ADDRINFOW** result, DWORD timeoutMs, int* rc)
+{
+    TimedAddrInfoContext ctx = {};
+    ctx.host = host;
+    ctx.hints = hints;
+    ctx.result = result;
+
+    HANDLE thread = CreateThread(NULL, 0, TimedGetAddrInfoThread, &ctx, 0, NULL);
+    if (!thread)
+    {
+        *rc = EAI_FAIL;
+        return true;
+    }
+
+    DWORD wait = WaitForSingleObject(thread, timeoutMs);
+    if (wait == WAIT_TIMEOUT)
+    {
+        TerminateThread(thread, 1);
+        CloseHandle(thread);
+        *rc = WSAETIMEDOUT;
+        return false;
+    }
+
+    CloseHandle(thread);
+    *rc = ctx.rc;
+    return true;
+}
+
+static void StartNameLookup(AppState* app, int hop, const sockaddr_storage& addr, int addrLen, int family, DWORD timeoutMs)
 {
     NameLookupContext* ctx = new NameLookupContext;
     ctx->app = app;
     ctx->hop = hop;
     ctx->family = family;
+    ctx->timeoutMs = timeoutMs;
     ctx->addr = addr;
     ctx->addrLen = addrLen;
     HANDLE thread = CreateThread(NULL, 0, [](LPVOID param) -> DWORD
@@ -219,8 +326,11 @@ static void StartNameLookup(AppState* app, int hop, const sockaddr_storage& addr
         NameLookupContext* lookup = (NameLookupContext*)param;
         WCHAR host[NI_MAXHOST] = L"";
         DWORD flags = NI_NAMEREQD;
-        int rc = GetNameInfoW((sockaddr*)&lookup->addr, lookup->addrLen, host, ARRAYSIZE(host), NULL, 0, flags);
-        if (rc != 0)
+        int rc = 0;
+        bool completed = GetNameInfoWithTimeout((sockaddr*)&lookup->addr, lookup->addrLen, host, ARRAYSIZE(host), flags, lookup->timeoutMs, &rc);
+        if (!completed)
+            CopyText(host, ARRAYSIZE(host), L"(DNS timed out)");
+        else if (rc != 0)
             host[0] = 0;
 
         EnterCriticalSection(&lookup->app->lock);
@@ -257,7 +367,15 @@ static bool ResolveTarget(const TraceConfig& config, sockaddr_storage* outAddr, 
     hints.ai_protocol = 0;
 
     ADDRINFOW* result = NULL;
-    int rc = GetAddrInfoW(config.host, NULL, &hints, &result);
+    int rc = 0;
+    bool completed = GetAddrInfoWithTimeout(config.host, &hints, &result, config.timeoutMs, &rc);
+    if (!completed)
+    {
+        WCHAR message[128];
+        wsprintfW(message, L"Unable to resolve host within %lu ms.", config.timeoutMs);
+        *error = message;
+        return false;
+    }
     if (rc != 0 || !result)
     {
         WCHAR message[128];
@@ -273,7 +391,7 @@ static bool ResolveTarget(const TraceConfig& config, sockaddr_storage* outAddr, 
     return true;
 }
 
-static void ProbeIpv4(HANDLE icmp, const sockaddr_in& target, int ttl, HopRow* row, sockaddr_storage* replyAddr, int* replyAddrLen)
+static void ProbeIpv4(HANDLE icmp, const sockaddr_in& target, int ttl, DWORD timeoutMs, HopRow* row, sockaddr_storage* replyAddr, int* replyAddrLen)
 {
     char requestData[] = "TracertGUI";
     DWORD replySize = sizeof(ICMP_ECHO_REPLY) + sizeof(requestData) + 64;
@@ -284,7 +402,7 @@ static void ProbeIpv4(HANDLE icmp, const sockaddr_in& target, int ttl, HopRow* r
     for (int i = 0; i < TRACE_PROBES; ++i)
     {
         DWORD sent = IcmpSendEcho(icmp, target.sin_addr.S_un.S_addr, requestData, sizeof(requestData),
-                                  &options, reply.data(), replySize, TRACE_TIMEOUT_MS);
+                                  &options, reply.data(), replySize, timeoutMs);
         if (sent > 0)
         {
             ICMP_ECHO_REPLY* echo = (ICMP_ECHO_REPLY*)reply.data();
@@ -308,7 +426,7 @@ static void ProbeIpv4(HANDLE icmp, const sockaddr_in& target, int ttl, HopRow* r
     }
 }
 
-static void ProbeIpv6(HANDLE icmp, const sockaddr_in6& target, int ttl, HopRow* row, sockaddr_storage* replyAddr, int* replyAddrLen)
+static void ProbeIpv6(HANDLE icmp, const sockaddr_in6& target, int ttl, DWORD timeoutMs, HopRow* row, sockaddr_storage* replyAddr, int* replyAddrLen)
 {
     char requestData[] = "TracertGUI";
     DWORD replySize = sizeof(ICMPV6_ECHO_REPLY) + sizeof(requestData) + 64;
@@ -321,7 +439,7 @@ static void ProbeIpv6(HANDLE icmp, const sockaddr_in6& target, int ttl, HopRow* 
     for (int i = 0; i < TRACE_PROBES; ++i)
     {
         DWORD sent = Icmp6SendEcho2(icmp, NULL, NULL, NULL, &source, (sockaddr_in6*)&target, requestData,
-                                    sizeof(requestData), &options, reply.data(), replySize, TRACE_TIMEOUT_MS);
+                                    sizeof(requestData), &options, reply.data(), replySize, timeoutMs);
         if (sent > 0)
         {
             ICMPV6_ECHO_REPLY* echo = (ICMPV6_ECHO_REPLY*)reply.data();
@@ -404,9 +522,9 @@ static DWORD WINAPI TraceThreadProc(LPVOID param)
         int replyAddrLen = 0;
 
         if (config.family == AF_INET6)
-            ProbeIpv6(icmp, *(sockaddr_in6*)&target, ttl, &row, &replyAddr, &replyAddrLen);
+            ProbeIpv6(icmp, *(sockaddr_in6*)&target, ttl, config.timeoutMs, &row, &replyAddr, &replyAddrLen);
         else
-            ProbeIpv4(icmp, *(sockaddr_in*)&target, ttl, &row, &replyAddr, &replyAddrLen);
+            ProbeIpv4(icmp, *(sockaddr_in*)&target, ttl, config.timeoutMs, &row, &replyAddr, &replyAddrLen);
 
         SummarizeHop(&row);
         if (replyAddrLen > 0)
@@ -416,7 +534,7 @@ static DWORD WINAPI TraceThreadProc(LPVOID param)
         }
         UpdateHop(app, row);
         if (replyAddrLen > 0)
-            StartNameLookup(app, ttl, replyAddr, replyAddrLen, config.family);
+            StartNameLookup(app, ttl, replyAddr, replyAddrLen, config.family, config.timeoutMs);
         if (row.destination || IsTerminalIcmpStatus(row.probes[0].status))
             break;
     }
@@ -439,6 +557,7 @@ static bool ReadTraceConfig(AppState* app, TraceConfig* config)
     config->family = familyIndex == 1 ? AF_INET6 : AF_INET;
     config->autoRefresh = SendMessageW(app->autoCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
     config->intervalSeconds = GetIntervalSeconds(app->intervalEdit);
+    config->timeoutMs = GetTimeoutMs(app->timeoutEdit);
     return true;
 }
 
@@ -448,6 +567,7 @@ static void SetRunning(AppState* app, bool running)
     SetWindowTextW(app->startButton, running ? L"Stop" : L"Trace");
     EnableWindow(app->hostEdit, !running);
     EnableWindow(app->familyCombo, !running);
+    EnableWindow(app->timeoutEdit, !running);
 }
 
 static void StartTrace(AppState* app)
@@ -504,14 +624,19 @@ static void LayoutControls(AppState* app, int width, int height)
     int comboW = 80;
     int autoW = 98;
     int intervalW = 54;
-    int hostW = std::max(140, width - margin * 2 - buttonW - comboW - autoW - intervalW - gap * 6 - 70);
+    int intervalLabelW = 54;
+    int timeoutLabelW = 76;
+    int timeoutW = 58;
+    int hostW = std::max(140, width - margin * 2 - buttonW - comboW - autoW - intervalW - intervalLabelW - timeoutLabelW - timeoutW - gap * 7 - 4);
 
     MoveWindow(app->hostEdit, x, y, hostW, rowH, TRUE); x += hostW + gap;
     MoveWindow(app->familyCombo, x, y, comboW, 120, TRUE); x += comboW + gap;
     MoveWindow(app->startButton, x, y, buttonW, rowH, TRUE); x += buttonW + gap;
     MoveWindow(app->autoCheck, x, y + 2, autoW, rowH, TRUE); x += autoW + gap;
     MoveWindow(app->intervalEdit, x, y, intervalW, rowH, TRUE); x += intervalW + 2;
-    MoveWindow(GetDlgItem(app->mainWnd, IDC_STATUS + 10), x, y + 4, 70, rowH, TRUE);
+    MoveWindow(GetDlgItem(app->mainWnd, IDC_STATUS + 10), x, y + 4, intervalLabelW, rowH, TRUE); x += intervalLabelW + gap;
+    MoveWindow(GetDlgItem(app->mainWnd, IDC_TIMEOUT + 10), x, y + 4, timeoutLabelW, rowH, TRUE); x += timeoutLabelW + 2;
+    MoveWindow(app->timeoutEdit, x, y, timeoutW, rowH, TRUE);
 
     y += rowH + gap;
     MoveWindow(app->statusText, margin, y, width - margin * 2, rowH, TRUE);
@@ -670,12 +795,16 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                                             0, 0, 0, 0, hwnd, (HMENU)IDC_INTERVAL, app->instance, NULL);
         CreateWindowExW(0, L"STATIC", L"seconds", WS_CHILD | WS_VISIBLE,
                         0, 0, 0, 0, hwnd, (HMENU)(IDC_STATUS + 10), app->instance, NULL);
+        CreateWindowExW(0, L"STATIC", L"Timeout (ms)", WS_CHILD | WS_VISIBLE,
+                        0, 0, 0, 0, hwnd, (HMENU)(IDC_TIMEOUT + 10), app->instance, NULL);
+        app->timeoutEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"100", WS_CHILD | WS_VISIBLE | ES_NUMBER,
+                                           0, 0, 0, 0, hwnd, (HMENU)IDC_TIMEOUT, app->instance, NULL);
         app->statusText = CreateWindowExW(0, L"STATIC", AppCredit, WS_CHILD | WS_VISIBLE | SS_LEFT,
                                           0, 0, 0, 0, hwnd, (HMENU)IDC_STATUS, app->instance, NULL);
         app->resultsView = CreateWindowExW(WS_EX_CLIENTEDGE, ResultsClassName, NULL, WS_CHILD | WS_VISIBLE,
                                            0, 0, 0, 0, hwnd, (HMENU)IDC_RESULTS, app->instance, app);
 
-        HWND controls[] = {app->hostEdit, app->familyCombo, app->startButton, app->autoCheck, app->intervalEdit, app->statusText, app->resultsView, GetDlgItem(hwnd, IDC_STATUS + 10)};
+        HWND controls[] = {app->hostEdit, app->familyCombo, app->startButton, app->autoCheck, app->intervalEdit, GetDlgItem(hwnd, IDC_STATUS + 10), GetDlgItem(hwnd, IDC_TIMEOUT + 10), app->timeoutEdit, app->statusText, app->resultsView};
         for (HWND control : controls)
             SendMessageW(control, WM_SETFONT, (WPARAM)app->uiFont, TRUE);
         return 0;
