@@ -110,6 +110,7 @@ struct NameLookupContext
 //------------------------------------------------------------------------------------------
 static const WCHAR* MainClassName = L"TracertGuiMainWindow";
 static const WCHAR* ResultsClassName = L"TracertGuiResultsView";
+static const WCHAR* AppCredit = L"Utility written by GPT-5.5, a model created by OpenAI.";
 //------------------------------------------------------------------------------------------
 static void SetWindowTextFormat(HWND wnd, const WCHAR* fmt, ...)
 {
@@ -669,7 +670,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                                             0, 0, 0, 0, hwnd, (HMENU)IDC_INTERVAL, app->instance, NULL);
         CreateWindowExW(0, L"STATIC", L"seconds", WS_CHILD | WS_VISIBLE,
                         0, 0, 0, 0, hwnd, (HMENU)(IDC_STATUS + 10), app->instance, NULL);
-        app->statusText = CreateWindowExW(0, L"STATIC", L"Ready.", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        app->statusText = CreateWindowExW(0, L"STATIC", AppCredit, WS_CHILD | WS_VISIBLE | SS_LEFT,
                                           0, 0, 0, 0, hwnd, (HMENU)IDC_STATUS, app->instance, NULL);
         app->resultsView = CreateWindowExW(WS_EX_CLIENTEDGE, ResultsClassName, NULL, WS_CHILD | WS_VISIBLE,
                                            0, 0, 0, 0, hwnd, (HMENU)IDC_RESULTS, app->instance, app);
@@ -758,7 +759,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow)
         return 1;
     }
 
-    HWND hwnd = CreateWindowExW(0, MainClassName, L"Trace Route GUI", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExW(0, MainClassName, L"Trace Route GUI - GPT-5.5", WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 860, 540,
                                 NULL, NULL, hInstance, &app);
     if (!hwnd)
