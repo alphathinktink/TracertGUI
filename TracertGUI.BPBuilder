@@ -3,7 +3,7 @@
     <LinkMUnicode>1</LinkMUnicode>
     <AppType>GUI</AppType>
     <Target>TracertGUI</Target>
-    <LinkLibraries>stdc++;shell32;uuid;comdlg32;comctl32;version;shlwapi</LinkLibraries>
+    <LinkLibraries>stdc++;ws2_32;iphlpapi;shell32;uuid;comdlg32;comctl32;version;shlwapi</LinkLibraries>
     <Warnings>unused-variable=0;unused-parameter=0;sign-compare=0;deprecated-declarations=0;attributes=1;unknown-pragmas=0;missing-field-initializers=0</Warnings>
     <VerboseBuild>0</VerboseBuild>
     <BuildArch>x64</BuildArch>
@@ -11,14 +11,14 @@
         <VersionSync>1</VersionSync>
         <FileVersion>1.0.0.0</FileVersion>
         <ProductVersion>1.0.0.0</ProductVersion>
-        <CompanyName></CompanyName>
-        <ProductName></ProductName>
-        <FileDescription></FileDescription>
-        <InternalName></InternalName>
-        <OriginalFilename></OriginalFilename>
+        <CompanyName>OpenAI</CompanyName>
+        <ProductName>Trace Route GUI</ProductName>
+        <FileDescription>GUI traceroute utility written by GPT-5.5</FileDescription>
+        <InternalName>TracertGUI</InternalName>
+        <OriginalFilename>TracertGUI.exe</OriginalFilename>
         <LegalCopyright></LegalCopyright>
         <LegalTrademarks></LegalTrademarks>
-        <Comments></Comments>
+        <Comments>Utility written by GPT-5.5, a model created by OpenAI.</Comments>
         <LangID>1033</LangID>
         <CodePage>1200</CodePage>
         <FileFlagsMask>63</FileFlagsMask>
@@ -105,10 +105,10 @@
     <ConfigStampUtcCompile>134232515439485089</ConfigStampUtcCompile>
     <LinkStampUtcCompile>134232515747637208</LinkStampUtcCompile>
     <VersionStampUtcCompile>134232515439485089</VersionStampUtcCompile>
-    <Conditionals>_UNICODE;UNICODE;NOVTABLE=;_WIN32_WINNT=0x0501</Conditionals>
+    <Conditionals>_UNICODE;UNICODE;NOVTABLE=;_WIN32_WINNT=0x0600</Conditionals>
     <IncludesPaths></IncludesPaths>
     <LibrariesPaths></LibrariesPaths>
     <Files>
-        <File Dir="" Base="WinMainUnit" Kind="CPP" SrcExt=".cpp" SrcSize="420" SrcMTime="2026-05-14T16:59:34Z" HasHeader="0"/>
+        <File Dir="" Base="WinMainUnit" Kind="CPP" SrcExt=".cpp" SrcSize="27559" SrcMTime="2026-05-14T18:30:00Z" HasHeader="0"/>
     </Files>
 </Project>
