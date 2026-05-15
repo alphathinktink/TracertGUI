@@ -43,8 +43,7 @@
 
 #define TRACE_MAX_HOPS          30
 #define TRACE_PROBES            1
-#define TRACE_TIMEOUT_MS        2000
-#define DNS_RESOLVE_TIMEOUT_MS   5000
+#define TRACE_TIMEOUT_MS        100
 #define TRACE_REFRESH_TIMER     42
 #define TRACE_DEFAULT_REFRESH   60
 //------------------------------------------------------------------------------------------
@@ -360,40 +359,8 @@ static void StartNameLookup(AppState* app, int hop, const sockaddr_storage& addr
         delete ctx;
 }
 
-static bool TryParseNumericTarget(const TraceConfig& config, sockaddr_storage* outAddr, int* outLen, WCHAR* display, size_t displayChars)
-{
-    if (config.family == AF_INET6)
-    {
-        sockaddr_in6 addr = {};
-        addr.sin6_family = AF_INET6;
-        if (InetPtonW(AF_INET6, config.host, &addr.sin6_addr) == 1)
-        {
-            memcpy(outAddr, &addr, sizeof(addr));
-            *outLen = sizeof(addr);
-            GetNameInfoW((sockaddr*)outAddr, *outLen, display, (DWORD)displayChars, NULL, 0, NI_NUMERICHOST);
-            return true;
-        }
-    }
-    else
-    {
-        sockaddr_in addr = {};
-        addr.sin_family = AF_INET;
-        if (InetPtonW(AF_INET, config.host, &addr.sin_addr) == 1)
-        {
-            memcpy(outAddr, &addr, sizeof(addr));
-            *outLen = sizeof(addr);
-            GetNameInfoW((sockaddr*)outAddr, *outLen, display, (DWORD)displayChars, NULL, 0, NI_NUMERICHOST);
-            return true;
-        }
-    }
-    return false;
-}
-
 static bool ResolveTarget(const TraceConfig& config, sockaddr_storage* outAddr, int* outLen, WCHAR* display, size_t displayChars, std::wstring* error)
 {
-    if (TryParseNumericTarget(config, outAddr, outLen, display, displayChars))
-        return true;
-
     ADDRINFOW hints = {};
     hints.ai_family = config.family;
     hints.ai_socktype = 0;
@@ -401,12 +368,11 @@ static bool ResolveTarget(const TraceConfig& config, sockaddr_storage* outAddr, 
 
     ADDRINFOW* result = NULL;
     int rc = 0;
-    DWORD resolveTimeoutMs = std::max(config.timeoutMs, (DWORD)DNS_RESOLVE_TIMEOUT_MS);
-    bool completed = GetAddrInfoWithTimeout(config.host, &hints, &result, resolveTimeoutMs, &rc);
+    bool completed = GetAddrInfoWithTimeout(config.host, &hints, &result, config.timeoutMs, &rc);
     if (!completed)
     {
         WCHAR message[128];
-        wsprintfW(message, L"Unable to resolve host within %lu ms.", resolveTimeoutMs);
+        wsprintfW(message, L"Unable to resolve host within %lu ms.", config.timeoutMs);
         *error = message;
         return false;
     }
@@ -460,42 +426,6 @@ static void ProbeIpv4(HANDLE icmp, const sockaddr_in& target, int ttl, DWORD tim
     }
 }
 
-static bool ResolveIpv6SourceAddress(const sockaddr_in6& target, sockaddr_in6* source)
-{
-    SOCKADDR_INET destination = {};
-    destination.si_family = AF_INET6;
-    destination.Ipv6 = target;
-
-    MIB_IPFORWARD_ROW2 route = {};
-    SOCKADDR_INET bestSource = {};
-    NETIO_STATUS status = GetBestRoute2(NULL, 0, NULL, &destination, 0, &route, &bestSource);
-    if (status != NO_ERROR || bestSource.si_family != AF_INET6)
-        return false;
-
-    *source = bestSource.Ipv6;
-    source->sin6_family = AF_INET6;
-    return true;
-}
-
-static bool ResolveIpv6SourceAddressWithSocket(const sockaddr_in6& target, sockaddr_in6* source)
-{
-    SOCKET sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET)
-        return false;
-
-    sockaddr_in6 destination = target;
-    destination.sin6_port = htons(33434);
-    bool ok = false;
-    if (connect(sock, (sockaddr*)&destination, sizeof(destination)) == 0)
-    {
-        int sourceLen = sizeof(*source);
-        if (getsockname(sock, (sockaddr*)source, &sourceLen) == 0 && source->sin6_family == AF_INET6)
-            ok = true;
-    }
-    closesocket(sock);
-    return ok;
-}
-
 static void ProbeIpv6(HANDLE icmp, const sockaddr_in6& target, int ttl, DWORD timeoutMs, HopRow* row, sockaddr_storage* replyAddr, int* replyAddrLen)
 {
     char requestData[] = "TracertGUI";
@@ -505,14 +435,6 @@ static void ProbeIpv6(HANDLE icmp, const sockaddr_in6& target, int ttl, DWORD ti
     options.Ttl = (UCHAR)ttl;
     sockaddr_in6 source = {};
     source.sin6_family = AF_INET6;
-    bool haveSource = ResolveIpv6SourceAddress(target, &source) || ResolveIpv6SourceAddressWithSocket(target, &source);
-
-    if (!haveSource)
-    {
-        for (int i = 0; i < TRACE_PROBES; ++i)
-            row->probes[i].status = IP_DEST_NET_UNREACHABLE;
-        return;
-    }
 
     for (int i = 0; i < TRACE_PROBES; ++i)
     {
@@ -537,8 +459,7 @@ static void ProbeIpv6(HANDLE icmp, const sockaddr_in6& target, int ttl, DWORD ti
         }
         else
         {
-            DWORD error = GetLastError();
-            row->probes[i].status = (error == 0 || error == ERROR_TIMEOUT) ? IP_REQ_TIMED_OUT : error;
+            row->probes[i].status = IP_REQ_TIMED_OUT;
         }
     }
 }
@@ -876,7 +797,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         0, 0, 0, 0, hwnd, (HMENU)(IDC_STATUS + 10), app->instance, NULL);
         CreateWindowExW(0, L"STATIC", L"Timeout (ms)", WS_CHILD | WS_VISIBLE,
                         0, 0, 0, 0, hwnd, (HMENU)(IDC_TIMEOUT + 10), app->instance, NULL);
-        app->timeoutEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"2000", WS_CHILD | WS_VISIBLE | ES_NUMBER,
+        app->timeoutEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"100", WS_CHILD | WS_VISIBLE | ES_NUMBER,
                                            0, 0, 0, 0, hwnd, (HMENU)IDC_TIMEOUT, app->instance, NULL);
         app->statusText = CreateWindowExW(0, L"STATIC", AppCredit, WS_CHILD | WS_VISIBLE | SS_LEFT,
                                           0, 0, 0, 0, hwnd, (HMENU)IDC_STATUS, app->instance, NULL);
